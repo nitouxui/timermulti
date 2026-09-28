@@ -53,7 +53,7 @@
   </style>
 </head>
 <body>
-  <section id="roomWelcome"><div><h1>Temporizador de torneos</h1><p>Inicia sesión o crea una cuenta en el recuadro inferior para crear una sala. Cada torneo tendrá su propio enlace y conteo.</p></div></section>
+  <section id="roomWelcome"><div><h1>Temporizador de torneos</h1><p>Inicia sesión o crea una cuenta en el recuadro inferior. Tu cuenta abrirá siempre la misma sala.</p></div></section>
   <div id="judgeView" aria-label="Temporizador para staff"><div id="judgeTimer" role="timer">02:00</div><div id="judgeStatus" role="status"></div></div>
   <div id="controlSync" hidden>
     <button id="syncToggle" type="button" aria-controls="syncBody" aria-expanded="true" aria-label="Ocultar panel de control" title="Ocultar panel de control">⚙</button>
@@ -67,7 +67,7 @@
       <button type="submit">Conectar</button>
       <button id="syncRegister" type="button">Crear cuenta de organizador</button>
     </form>
-    <button id="createRoom" type="button" hidden>Crear sala para otro torneo</button>
+    <button id="createRoom" type="button" hidden>Abrir mi sala</button>
     <button id="syncLogout" type="button" hidden>Cerrar sesión</button>
     <div><a id="judgeLink" target="_blank" rel="noopener">Abrir vista del staff</a></div>
     </div>
@@ -176,8 +176,6 @@
     </div>
   </div>
 
-  <audio id="bipSound" src="" preload="auto"></audio>
-  <audio id="alarmSound" src="assets/alarma.mp3" preload="auto"></audio>
 
   <script>
 /* QRCode for JavaScript, copyright Kazuhiko Arase, MIT license.
@@ -1472,13 +1470,13 @@ module.exports = QRCode;
       document.getElementById('modal').style.display = 'none';
     }
 
-    // Keep each room's appearance on this browser separate from other rooms.
+    // Legacy local settings are used only to migrate an existing room once.
     function settingsKey(name) {
       const room = new URLSearchParams(location.search).get('sala');
       return room ? `timer:${room}:${name}` : name;
     }
 
-    function saveSettings() {
+    async function saveSettings() {
       const mode = document.querySelector('input[name="leftVisualMode"]:checked').value;
       if (mode === 'qr' && !generateQR()) return;
       if (mode === 'upload' && !uploadedImageSrc) {
@@ -1489,28 +1487,18 @@ module.exports = QRCode;
       applyButtonStyles();
 
       const logo = document.getElementById('logo');
-      const leftImage = document.getElementById('leftImage');
-
       const imageSettings = {
         logoSrc: logo.getAttribute('src') || '',
         leftVisualMode: mode,
         uploadedImageSrc,
         qrUrl: document.getElementById('qrUrl').value.trim()
       };
-      try {
-        localStorage.setItem(settingsKey('imageSettings'), JSON.stringify(imageSettings));
-      } catch (error) {
-        document.getElementById('qrStatus').textContent = 'La imagen ocupa demasiado espacio para guardarla. Usa una imagen más pequeña.';
-        return;
-      }
-
       const leftPanel = document.getElementById('leftPanel');
       const rightPanel = document.getElementById('rightPanel');
       const backgroundSettings = {
         left: leftPanel.style.background,
         right: rightPanel.style.background
       };
-      localStorage.setItem(settingsKey('backgroundSettings'), JSON.stringify(backgroundSettings));
 
       const textSettings = {
         size: document.getElementById('timerSize').value,
@@ -1519,26 +1507,44 @@ module.exports = QRCode;
         negativeColor: document.getElementById('negativeColor').value,
         minutes: document.getElementById('timerInput').value
       };
-      localStorage.setItem(settingsKey('textSettings'), JSON.stringify(textSettings));
 
       const buttonSettings = {
         bgColor: document.getElementById('buttonBgColor').value,
         textColor: document.getElementById('buttonTextColor').value,
         borderRadius: document.getElementById('buttonBorderRadius').value
       };
-      localStorage.setItem(settingsKey('buttonSettings'), JSON.stringify(buttonSettings));
-
-      closeModal();
+      const settings = { images: imageSettings, backgrounds: backgroundSettings,
+        text: textSettings, buttons: buttonSettings };
+      if (typeof window.saveRoomSettings !== 'function') {
+        document.getElementById('qrStatus').textContent = 'Espera a que se conecte la sala para guardar.';
+        return;
+      }
+      const saved = await window.saveRoomSettings(settings);
+      if (saved) closeModal();
     }
 
-    function loadSettings() {
-      const imageSaved = localStorage.getItem(settingsKey('imageSettings'));
-      if (imageSaved) {
-        const images = JSON.parse(imageSaved);
+    function legacySettings() {
+      try {
+        const read = name => JSON.parse(localStorage.getItem(settingsKey(name)) || 'null');
+        const images = read('imageSettings');
+        const backgrounds = read('backgroundSettings');
+        const text = read('textSettings');
+        const buttons = read('buttonSettings');
+        return images || backgrounds || text || buttons ? { images, backgrounds, text, buttons } : null;
+      } catch { return null; }
+    }
+
+    function loadSettings(settings) {
+      if (!settings || typeof settings !== 'object') return;
+      const images = settings.images;
+      if (images) {
+        const logo = document.getElementById('logo');
         if (images.logoSrc) {
-          const logo = document.getElementById('logo');
           logo.src = images.logoSrc;
           logo.style.display = 'block';
+        } else {
+          logo.removeAttribute('src');
+          logo.style.display = 'none';
         }
         uploadedImageSrc = images.uploadedImageSrc || '';
         document.getElementById('qrUrl').value = images.qrUrl || '';
@@ -1549,16 +1555,14 @@ module.exports = QRCode;
         switchLeftVisualMode();
       }
 
-      const backgroundSaved = localStorage.getItem(settingsKey('backgroundSettings'));
-      if (backgroundSaved) {
-        const backgrounds = JSON.parse(backgroundSaved);
-        if (backgrounds.left) document.getElementById('leftPanel').style.background = backgrounds.left;
-        if (backgrounds.right) document.getElementById('rightPanel').style.background = backgrounds.right;
+      const backgrounds = settings.backgrounds;
+      if (backgrounds) {
+        document.getElementById('leftPanel').style.background = backgrounds.left || '';
+        document.getElementById('rightPanel').style.background = backgrounds.right || '';
       }
 
-      const textSaved = localStorage.getItem(settingsKey('textSettings'));
-      if (textSaved) {
-        const text = JSON.parse(textSaved);
+      const text = settings.text;
+      if (text) {
         document.getElementById('timerSize').value = text.size;
         document.getElementById('timerWeight').value = text.weight;
         document.getElementById('timerColor').value = text.color;
@@ -1569,12 +1573,11 @@ module.exports = QRCode;
         updateTimerDisplay();
       }
 
-      const buttonSaved = localStorage.getItem(settingsKey('buttonSettings'));
-      if (buttonSaved) {
-        const button = JSON.parse(buttonSaved);
-        document.getElementById('buttonBgColor').value = button.bgColor;
-        document.getElementById('buttonTextColor').value = button.textColor;
-        document.getElementById('buttonBorderRadius').value = button.borderRadius;
+      const buttons = settings.buttons;
+      if (buttons) {
+        document.getElementById('buttonBgColor').value = buttons.bgColor;
+        document.getElementById('buttonTextColor').value = buttons.textColor;
+        document.getElementById('buttonBorderRadius').value = buttons.borderRadius;
         applyButtonStyles();
       }
     }
@@ -1670,6 +1673,30 @@ module.exports = QRCode;
       });
     }
 
+    let soundContext;
+    function prepareSound() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      soundContext ||= new AudioContextClass();
+      if (soundContext.state === 'suspended') soundContext.resume().catch(() => {});
+    }
+    function playEndSound() {
+      if (!soundContext || soundContext.state !== 'running') return;
+      const now = soundContext.currentTime;
+      [0, 0.24, 0.48].forEach((delay, index) => {
+        const oscillator = soundContext.createOscillator();
+        const gain = soundContext.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = index === 2 ? 880 : 660;
+        gain.gain.setValueAtTime(0.0001, now + delay);
+        gain.gain.exponentialRampToValueAtTime(0.28, now + delay + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + 0.2);
+        oscillator.connect(gain).connect(soundContext.destination);
+        oscillator.start(now + delay);
+        oscillator.stop(now + delay + 0.21);
+      });
+    }
+
     let countdown;
     let timeLeft = 120;
 
@@ -1680,6 +1707,7 @@ module.exports = QRCode;
     }
 
     function toggleTimer() {
+      prepareSound();
       const button = document.getElementById('toggleButton');
       if (countdown) {
         clearInterval(countdown);
@@ -1691,14 +1719,11 @@ module.exports = QRCode;
 updateTimerDisplay();
 
 if (timeLeft === 0) {
-  document.getElementById('alarmSound').play();
+  playEndSound();
 }
 
 if (timeLeft < 0) {
   document.getElementById('timer').style.color = document.getElementById('negativeColor').value;
-} else if (timeLeft <= 10) {
-  document.getElementById('bipSound').play();
-  // No cambiar el color aún, solo bip.
 }
 
         }, 1000);
@@ -1853,7 +1878,6 @@ if (timeLeft < 0) {
 
     window.onload = () => {
       updateTimerDisplay();
-      loadSettings();
     };
   </script>
 
@@ -1895,7 +1919,10 @@ if (timeLeft < 0) {
     let serverOffset = 0;
     let canControl = false;
     let lastSecond = null;
-    let stateRef, roomRef, auth, dbModule, authModule;
+    let stateRef, roomRef, settingsRef, auth, dbModule, authModule;
+    let settingsLoaded = false;
+    let remoteSettingsPresent = false;
+    let migrationStarted = false;
     const startButton = document.getElementById('toggleButton');
     const resetButton = document.getElementById('resetButton');
     const durationInput = document.getElementById('timerInput');
@@ -1926,7 +1953,7 @@ if (timeLeft < 0) {
           : document.getElementById('timerColor').value;
         document.getElementById('toggleButton').textContent = currentState.running ? 'Pausar' : 'Iniciar';
         if (lastSecond !== null && lastSecond > 0 && seconds <= 0)
-          document.getElementById('alarmSound').play().catch(() => {});
+          window.playEndSound();
       }
       document.getElementById('judgeTimer').style.color = seconds < 0 ? '#ff6262' : '#fff';
       lastSecond = seconds;
@@ -1936,13 +1963,22 @@ if (timeLeft < 0) {
       startButton.disabled = resetButton.disabled = durationInput.disabled = !canControl;
       loginForm.hidden = !!currentUser;
       logoutButton.hidden = !currentUser;
-      createButton.hidden = !currentUser;
+      createButton.hidden = !currentUser || canControl;
       if (!isJudge) {
-        syncStatus.textContent = !currentUser ? 'Inicia sesión para controlar o crear una sala.'
-          : !rawRoom ? 'Crea una sala para tu torneo.'
-          : !roomOwner ? 'Sala no encontrada. Puedes crear una nueva.'
+        syncStatus.textContent = !currentUser ? 'Inicia sesión para abrir tu sala.'
+          : !rawRoom ? 'Buscando tu sala…'
+          : !roomOwner ? 'Sala no encontrada. Abre tu sala.'
           : canControl ? 'Control conectado' : 'Esta sala pertenece a otro organizador. Solo lectura.';
       }
+      migrateLegacySettings();
+    }
+    async function migrateLegacySettings() {
+      if (!settingsLoaded || remoteSettingsPresent || migrationStarted || !canControl || !settingsRef) return;
+      const old = window.legacySettings();
+      if (!old) return;
+      migrationStarted = true;
+      try { await dbModule.set(settingsRef, JSON.stringify(old)); }
+      catch (error) { migrationStarted = false; showError(error); }
     }
     function showError(error) {
       const code = error?.code || 'error/desconocido';
@@ -1978,6 +2014,33 @@ if (timeLeft < 0) {
         const db = dbModule.getDatabase(app);
         roomRef = rawRoom ? dbModule.ref(db, 'rooms/' + roomId) : null;
         stateRef = rawRoom ? dbModule.ref(db, 'rooms/' + roomId + '/state') : null;
+        settingsRef = rawRoom && !isJudge ? dbModule.ref(db, 'rooms/' + roomId + '/settings') : null;
+        if (settingsRef) {
+          window.saveRoomSettings = async settings => {
+            if (!canControl) {
+              document.getElementById('qrStatus').textContent = 'Inicia sesión como propietario de esta sala para guardar.';
+              return false;
+            }
+            try {
+              await dbModule.set(settingsRef, JSON.stringify(settings));
+              syncStatus.textContent = 'Ajustes guardados en esta sala.';
+              return true;
+            } catch (error) {
+              showError(error);
+              document.getElementById('qrStatus').textContent = 'No se pudieron guardar los ajustes. Revisa las reglas de Firebase.';
+              return false;
+            }
+          };
+          dbModule.onValue(settingsRef, snap => {
+            settingsLoaded = true;
+            remoteSettingsPresent = snap.exists();
+            if (snap.exists()) {
+              try { window.loadSettings(JSON.parse(snap.val())); }
+              catch { syncStatus.textContent = 'No se pudieron leer los ajustes de la sala.'; }
+            }
+            migrateLegacySettings();
+          }, () => { syncStatus.textContent = 'No se pudieron cargar los ajustes de la sala.'; });
+        }
         dbModule.onValue(dbModule.ref(db, '.info/serverTimeOffset'), snap => {
           serverOffset = snap.val() || 0;
         });
@@ -2001,7 +2064,35 @@ if (timeLeft < 0) {
         if (stateRef) setInterval(renderLive, 200);
         if (!isJudge) {
           auth = authModule.getAuth(app);
-          authModule.onAuthStateChanged(auth, user => { currentUser = user; updateAccess(); });
+          async function openOwnRoom(user) {
+            syncStatus.textContent = 'Buscando tu sala…';
+            try {
+              const owned = dbModule.query(dbModule.ref(db, 'rooms'),
+                dbModule.orderByChild('ownerUid'), dbModule.equalTo(user.uid), dbModule.limitToFirst(1));
+              const found = await dbModule.get(owned);
+              if (auth.currentUser?.uid !== user.uid) return;
+              let id = found.exists() ? Object.keys(found.val())[0] : user.uid;
+              if (!found.exists()) {
+                const minutes = Math.max(1, Number(document.getElementById('timerInput').value) || 2);
+                const ownRef = dbModule.ref(db, 'rooms/' + id);
+                const existing = await dbModule.get(ownRef);
+                if (!existing.exists()) await dbModule.set(ownRef, {
+                  ownerUid: user.uid,
+                  state: { running: false, remainingMs: minutes * 60000, startedAt: 0 }
+                });
+              }
+              if (auth.currentUser?.uid !== user.uid) return;
+              const next = new URL(location.href);
+              next.searchParams.set('sala', id);
+              next.searchParams.delete('view');
+              location.assign(next.href);
+            } catch (error) { showError(error); }
+          }
+          authModule.onAuthStateChanged(auth, user => {
+            currentUser = user;
+            updateAccess();
+            if (user && !rawRoom) openOwnRoom(user);
+          });
           loginForm.addEventListener('submit', async event => {
             event.preventDefault();
             try {
@@ -2018,28 +2109,16 @@ if (timeLeft < 0) {
                 document.getElementById('syncEmail').value,
                 document.getElementById('syncPassword').value);
               loginForm.reset();
-              syncStatus.textContent = 'Cuenta creada. Ahora crea una sala para tu torneo.';
+              syncStatus.textContent = 'Cuenta creada. Abriendo tu sala…';
             } catch (error) { syncStatus.textContent = `No se pudo crear la cuenta (${error.code}).`; }
           });
           logoutButton.addEventListener('click', () => authModule.signOut(auth));
-          createButton.addEventListener('click', async () => {
-            if (!currentUser) return;
-            const bytes = crypto.getRandomValues(new Uint8Array(12));
-            const id = Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');
-            const minutes = Math.max(1, Number(document.getElementById('timerInput').value) || 2);
-            try {
-              await dbModule.set(dbModule.ref(db, 'rooms/' + id), {
-                ownerUid: currentUser.uid,
-                state: { running: false, remainingMs: minutes * 60000, startedAt: 0 }
-              });
-              const next = new URL(location.href);
-              next.searchParams.set('sala', id);
-              next.searchParams.delete('view');
-              location.assign(next.href);
-            } catch (error) { showError(error); }
+          createButton.addEventListener('click', () => {
+            if (currentUser) openOwnRoom(currentUser);
           });
           window.toggleTimer = () => {
             if (!canControl) { syncStatus.textContent = 'Sin permiso para controlar esta sala.'; return; }
+            window.prepareSound();
             const minutes = Math.max(1, Number(document.getElementById('timerInput').value) || 2);
             const ms = currentState ? remainingMs() : minutes * 60000;
             publish({ running: !currentState?.running, remainingMs: ms,
